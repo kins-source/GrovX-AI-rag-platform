@@ -158,18 +158,5 @@ Sensitive data such as API keys are stored in `.env` and excluded using `.gitign
 
 ---
 
-## 🏁 Conclusion
 
-This project demonstrates how Agentic AI and RAG can be used to build intelligent, transparent, and scalable enterprise knowledge systems.
-
----
-
-## 👨‍💻 Authors
-
-* Manya U Ghorpade
-* Rohit Nijaguli
-
----
-
-## ⭐ If you found this useful, give it a star!
 
