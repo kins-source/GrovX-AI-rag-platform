@@ -1,4 +1,4 @@
-# GROVX AI : Hybrid Agentic QA System for SQL & Document Retrieval,vector search using Agentic RAG
+# GROX AI : Hybrid Agentic QA System for SQL & Document Retrieval,vector search using Agentic RAG
 
 An intelligent AI-powered assistant that enables users to query both structured databases and unstructured documents using natural language.
 
