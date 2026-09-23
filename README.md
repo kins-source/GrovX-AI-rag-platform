@@ -137,7 +137,7 @@ python -m uvicorn backend.main:app --reload
 ### 4. Run Frontend
 
 ```bash
-streamlit run frontend/app.py
+python3 -m streamlit run frontend/app.py
 ```
 
 ---
