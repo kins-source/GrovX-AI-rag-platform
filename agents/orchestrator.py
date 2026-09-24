@@ -1,6 +1,8 @@
 import os
-from langchain_ollama import ChatOllama
+from functools import lru_cache
 from langgraph.prebuilt import create_react_agent
+from langchain_core.messages import AIMessage, ToolMessage
+from agents.llm_provider import get_llm
 from agents.sql_agent import query_sales_database
 from agents.retriever_agent import retrieve_enterprise_documents
 from agents.guardrails import is_safe_query, validate_grounding
@@ -11,18 +13,49 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Initialize the local LLM (Ollama running llama3.1 locally for tool support)
-llm = ChatOllama(model="llama3.1", temperature=0)
-
 # Define the tools available to the orchestrator
 tools = [query_sales_database, retrieve_enterprise_documents]
 
-# Create the orchestrator agent using LangGraph's prebuilt react agent
-# This acts as a primary agent with a plan-act-observe loop
-agent_executor = create_react_agent(llm, tools)
+
+def _nvidia_agent_response(user_query, api_key, model):
+    """Execute local tools explicitly because NVIDIA NIM tool calls are not reliable here."""
+    query_lower = user_query.lower()
+    tool_result = None
+
+    if any(keyword in query_lower for keyword in ("revenue", "sales", "orders", "customer count", "transactions")):
+        if "average" in query_lower:
+            sql_query = "SELECT AVG(total_price) FROM orders;"
+        elif "count" in query_lower or "number" in query_lower or "total orders" in query_lower:
+            sql_query = "SELECT COUNT(*) FROM orders;"
+        else:
+            sql_query = "SELECT SUM(total_price) FROM orders;"
+        tool_result = query_sales_database.invoke(sql_query)
+    elif any(keyword in query_lower for keyword in ("document", "pdf", "policy", "compliance", "uploaded")):
+        tool_result = retrieve_enterprise_documents.invoke(user_query)
+
+    system_prompt = (
+        "You are an Enterprise AI Knowledge Assistant. Answer the user's question directly and concisely. "
+        "Use the supplied database or document context when present. Do not mention internal tools or implementation details."
+    )
+    if tool_result is not None:
+        system_prompt += f"\n\nRetrieved context:\n{tool_result}"
+
+    response = get_llm("nvidia", api_key, model).invoke([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_query},
+    ])
+    messages = [response]
+    if tool_result is not None:
+        messages.insert(0, ToolMessage(content=str(tool_result), tool_call_id="nvidia-direct-tool"))
+    return {"messages": messages}
+
+
+@lru_cache(maxsize=12)
+def get_agent(provider=None, api_key=None, model=None):
+    return create_react_agent(get_llm(provider, api_key, model), tools)
 
 @track_latency
-def process_query(user_query: str) -> dict:
+def process_query(user_query: str, provider=None, api_key=None, model=None) -> dict:
     """
     Main entry point for handling user queries.
     Applies guardrails, checks cache, executes the agent, and formats the response.
@@ -59,7 +92,10 @@ def process_query(user_query: str) -> dict:
         ]
         
         # Invoke the LangGraph agent
-        response_state = agent_executor.invoke({"messages": messages})
+        if (provider or os.getenv("LLM_PROVIDER", "ollama")).lower() == "nvidia":
+            response_state = _nvidia_agent_response(user_query, api_key, model)
+        else:
+            response_state = get_agent(provider, api_key, model).invoke({"messages": messages})
         
         # Extract the AI's final answer
         final_answer = str(response_state["messages"][-1].content)
@@ -109,4 +145,9 @@ def process_query(user_query: str) -> dict:
         
     except Exception as e:
         logger.error(f"Error during agent execution: {e}")
+        if (provider or os.getenv("LLM_PROVIDER", "ollama")).lower() == "nvidia" and "Function" in str(e):
+            return {
+                "answer": "NVIDIA NIM rejected this request. Rotate NVIDIA_NIM_API_KEY in .env and restart the backend.",
+                "sources": [],
+            }
         return {"answer": f"Internal system error occurred: {str(e)}", "sources": []}

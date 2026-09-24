@@ -100,6 +100,14 @@ cd GrovX-AI-enterprise-rag-platform
 pip install -r requirements.txt
 ```
 
+Copy `.env.example` to `.env`, then set `LLM_PROVIDER` and the matching API
+key. Supported providers are `ollama`, `openai`, `gemini`, `grok`, and
+`nvidia`. Only the selected provider needs a key; keep `.env` private.
+
+The NVIDIA provider uses the OpenAI-compatible NVIDIA NIM endpoint. Set
+`NVIDIA_BASE_URL` and `NVIDIA_MODEL` when using a self-hosted or different NIM
+deployment.
+
 ---
 
 ## 🤖 Run LLM (Ollama)
@@ -139,6 +147,9 @@ python -m uvicorn backend.main:app --reload
 ```bash
 python3 -m streamlit run frontend/app.py
 ```
+
+After an upload is indexed, the sidebar displays the extracted text preview,
+section count, and character count returned by the Python API.
 
 ---
 

@@ -3,6 +3,7 @@ from pydantic import BaseModel
 from typing import List
 import uvicorn
 import time
+import os
 
 from utils.security import get_api_key
 from utils.logger import logger
@@ -16,6 +17,9 @@ app = FastAPI(title="Enterprise AI Knowledge Assistant", version="1.0.0")
 
 class QueryRequest(BaseModel):
     query: str
+    provider: str | None = None
+    api_key: str | None = None
+    model: str | None = None
 
 class QueryResponse(BaseModel):
     answer: str
@@ -34,7 +38,14 @@ async def upload_document(file: UploadFile = File(...)):
         docs = load_document(content, file.filename)
         chunks = chunk_documents(docs)
         add_documents_to_store(chunks)
-        return {"message": f"Successfully processed and stored {file.filename}."}
+        extracted_text = "\n\n".join(doc.page_content.strip() for doc in docs if doc.page_content.strip())
+        return {
+            "message": f"Successfully processed and stored {file.filename}.",
+            "filename": file.filename,
+            "pages": len(docs),
+            "characters": len(extracted_text),
+            "preview": extracted_text[:5000],
+        }
     except ValueError as ve:
         raise HTTPException(status_code=400, detail=str(ve))
     except Exception as e:
@@ -51,7 +62,7 @@ async def query_assistant(request: QueryRequest):
     """
     start_time = time.time()
     try:
-        result = process_query(request.query)
+        result = process_query(request.query, request.provider, request.api_key, request.model)
         latency = round(time.time() - start_time, 4)
         return QueryResponse(
             answer=result["answer"],
@@ -60,11 +71,13 @@ async def query_assistant(request: QueryRequest):
         )
     except Exception as e:
         logger.error(f"Query error: {e}")
-        raise HTTPException(status_code=500, detail="System encountered an error processing query.")
+        if isinstance(e, (ValueError, KeyError)):
+            raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=500, detail=f"System encountered an error processing query: {e}")
 
 @app.get("/health")
 def health_check():
     return {"status": "ok"}
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))

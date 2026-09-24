@@ -3,11 +3,12 @@ import requests
 import json
 import os
 from dotenv import load_dotenv
+from agents.llm_provider import get_nvidia_models
 
 load_dotenv()
 
 API_KEY = os.getenv("API_KEY", "default-dev-key")
-BACKEND_URL = "http://localhost:8000"
+BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
 HEADERS = {"X-API-KEY": API_KEY}
 
 # ----------------- PAGE CONFIG -----------------
@@ -20,21 +21,35 @@ st.set_page_config(
 
 # ----------------- SESSION STATE -----------------
 if "sidebar_open" not in st.session_state:
-    st.session_state.sidebar_open = False
+    st.session_state.sidebar_open = True
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "uploaded_files" not in st.session_state:
     st.session_state.uploaded_files = []
+if "uploaded_outputs" not in st.session_state:
+    st.session_state.uploaded_outputs = {}
 if "query_count" not in st.session_state:
     st.session_state.query_count = 0
 if "avg_latency" not in st.session_state:
     st.session_state.avg_latency = 0.0
+if "llm_provider" not in st.session_state:
+    st.session_state.llm_provider = os.getenv("LLM_PROVIDER", "ollama")
+if "llm_api_key" not in st.session_state:
+    st.session_state.llm_api_key = ""
+if "applied_provider" not in st.session_state:
+    st.session_state.applied_provider = st.session_state.llm_provider
+if "applied_api_key" not in st.session_state:
+    st.session_state.applied_api_key = ""
+if "nvidia_model" not in st.session_state:
+    st.session_state.nvidia_model = os.getenv("NVIDIA_MODEL", get_nvidia_models()[0])
+if "applied_nvidia_model" not in st.session_state:
+    st.session_state.applied_nvidia_model = st.session_state.nvidia_model
 
 # ----------------- GLOBAL CSS -----------------
 st.markdown("""
 <style>
     /* SaaS Global Styling */
-    .stApp { background-color: #fcfcfc; }
+    .stApp { background: radial-gradient(circle at 88% 0%, #dbeafe 0%, #f7fbff 32%, #eef4f9 100%); color: #0b1220; }
     header {visibility: hidden;}
     footer {visibility: hidden;}
 
@@ -48,6 +63,10 @@ st.markdown("""
         padding-bottom: 5rem;
         max-width: 1000px;
     }
+    [data-testid="stMetric"] { background: rgba(255,255,255,0.78); border: 1px solid #cbdced; border-radius: 16px; padding: 1rem; box-shadow: 0 10px 28px rgba(15, 35, 61, 0.08); }
+    .stButton > button { border-radius: 12px; border: 1px solid #b5c8dc; background: #ffffff; color: #0f2742; font-weight: 650; transition: all 0.2s ease; }
+    .stButton > button:hover { border-color: #2563a8; background: #e8f2ff; color: #0b3c70; transform: translateY(-1px); }
+    [data-testid="stChatInput"] { border: 1px solid #a9bfd6; border-radius: 16px; background: rgba(255,255,255,0.92); box-shadow: 0 12px 30px rgba(15, 35, 61, 0.1); }
 
     /* Modern Chat Bubble Settings */
     /* AI Message Bubble */
@@ -78,13 +97,14 @@ st.markdown("""
         left: 0;
         width: 280px;
         height: 100vh;
-        background-color: #0f172a;
+        background: linear-gradient(160deg, #07111f 0%, #0c1f35 55%, #102f4e 100%);
         z-index: 999999;
         padding: 2rem 1.5rem;
         overflow-y: auto;
         transition: transform 0.3s ease-in-out;
         border-right: 1px solid #1e293b;
-        box-shadow: 4px 0 10px rgba(0,0,0,0.1);
+        box-shadow: 12px 0 32px rgba(2, 12, 25, 0.3);
+        border-radius: 0 18px 18px 0;
     }
 
     /* Force all text inside custom sidebar to white */
@@ -98,8 +118,16 @@ st.markdown("""
         border: 1px solid #334155 !important;
     }
     div[data-testid="stVerticalBlock"]:has(> div.element-container div#my-custom-sidebar) button:hover {
-        border: 1px solid #475569 !important;
+        border: 1px solid #60a5fa !important;
+        background-color: #173b60 !important;
     }
+    div[data-testid="stVerticalBlock"]:has(> div.element-container div#my-custom-sidebar) input,
+    div[data-testid="stVerticalBlock"]:has(> div.element-container div#my-custom-sidebar) [data-baseweb="select"] > div {
+        border-radius: 10px !important;
+        background-color: #132943 !important;
+        border-color: #345777 !important;
+    }
+    div[data-testid="stVerticalBlock"]:has(> div.element-container div#my-custom-sidebar) hr { opacity: 0.45; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -140,7 +168,11 @@ with sidebar_container:
     
     # 1. Documents Section
     st.markdown("<h4>📂 Documents</h4>", unsafe_allow_html=True)
-    uploaded_file = st.file_uploader("Upload Data", type=["pdf", "txt"], label_visibility="collapsed")
+    uploaded_file = st.file_uploader(
+        "Upload Data",
+        type=["pdf", "txt", "md", "markdown", "csv", "doc", "docx", "ppt", "pptx", "xls", "xlsx"],
+        label_visibility="collapsed",
+    )
     if st.button("Upload & Index", use_container_width=True):
         if uploaded_file:
             with st.spinner("Processing..."):
@@ -149,7 +181,12 @@ with sidebar_container:
                     response = requests.post(f"{BACKEND_URL}/upload", files=files, headers=HEADERS)
                     if response.status_code == 200:
                         st.session_state.uploaded_files.append(uploaded_file.name)
-                        st.success("Indexed!")
+                        upload_data = response.json()
+                        st.session_state.uploaded_outputs[uploaded_file.name] = upload_data
+                        st.success(upload_data.get("message", "Indexed!"))
+                        with st.expander("Uploaded file output", expanded=True):
+                            st.caption(f"{upload_data.get('pages', 0)} sections, {upload_data.get('characters', 0)} characters")
+                            st.text(upload_data.get("preview", "No text was extracted."))
                     else:
                         st.error("Upload failed.")
                 except Exception as e:
@@ -159,6 +196,10 @@ with sidebar_container:
         st.markdown("<p style='font-size: 0.9em; margin-top:1em; margin-bottom:0;'>Indexed Files:</p>", unsafe_allow_html=True)
         for f in set(st.session_state.uploaded_files):
             st.caption(f"📄 {f}")
+            output = st.session_state.uploaded_outputs.get(f)
+            if output:
+                with st.expander(f"View output: {f}"):
+                    st.text(output.get("preview", "No text was extracted."))
             
     st.markdown("<hr style='border-color: #1e293b; margin-top: 1.5rem; margin-bottom: 1.5rem;'>", unsafe_allow_html=True)
     
@@ -176,33 +217,69 @@ with sidebar_container:
     
     # 3. Settings Section
     st.markdown("<h4>⚙️ Settings</h4>", unsafe_allow_html=True)
-    st.selectbox("LLM Engine", ["Llama 3.1", "Mistral-7B", "GPT-4"], disabled=True)
-    st.caption("Locked by Organization settings.")
+    provider_names = {
+        "ollama": "Ollama",
+        "openai": "ChatGPT / OpenAI",
+        "gemini": "Google Gemini",
+        "grok": "xAI Grok",
+        "nvidia": "NVIDIA NIM",
+    }
+    provider = st.selectbox(
+        "LLM Provider",
+        list(provider_names),
+        format_func=lambda value: provider_names[value],
+        key="llm_provider",
+    )
+    if provider == "ollama":
+        st.caption("Uses the configured Ollama server. No API key required.")
+    else:
+        if provider == "nvidia":
+            st.selectbox(
+                "NVIDIA NIM model",
+                get_nvidia_models(),
+                key="nvidia_model",
+            )
+        st.text_input(
+            f"{provider_names[provider]} API key",
+            type="password",
+            key="llm_api_key",
+            placeholder="Paste your key for this session",
+        )
+    if st.button("Apply API Key", use_container_width=True, key="apply_api_key"):
+        if provider != "ollama" and not st.session_state.llm_api_key.strip():
+            st.error("Enter an API key before applying this provider.")
+        else:
+            st.session_state.applied_provider = provider
+            st.session_state.applied_api_key = st.session_state.llm_api_key.strip()
+            if provider == "nvidia":
+                st.session_state.applied_nvidia_model = st.session_state.nvidia_model
+            st.success(f"{provider_names[provider]} is ready for queries.")
+    if st.session_state.applied_provider == provider:
+        st.caption(f"Active provider: {provider_names[provider]}")
 
 
-# ----------------- MAIN LAYOUT HEADER AND BUTTON -----------------
-# ----------------- MAIN LAYOUT HEADER AND BUTTON -----------------
-col_btn, col_title = st.columns([0.08, 0.92])
+# ----------------- NAVBAR -----------------
+with st.container():
+    col_btn, col_title = st.columns([0.08, 0.92])
 
-with col_btn:
-    # ☰ Hamburger button to toggle the sidebar
-    if st.button("☰", key="hamburger", help="Toggle Sidebar"):
-        st.session_state.sidebar_open = not st.session_state.sidebar_open
-        st.rerun()
+    with col_btn:
+        if st.button("☰", key="hamburger", help="Toggle workspace panel"):
+            st.session_state.sidebar_open = not st.session_state.sidebar_open
+            st.rerun()
 
-with col_title:
-    st.markdown("""
-    <h1 style="
-        color: #111827;
-        font-weight: 700;
-        font-size: 40px;
-        margin-bottom: 5px;
-    ">
-    ⚡ Enterprise AI Knowledge Assistant
-    </h1>
-    """, unsafe_allow_html=True)
+    with col_title:
+        st.markdown("""
+        <h1 style="
+            color: #111827;
+            font-weight: 700;
+            font-size: 40px;
+            margin-bottom: 5px;
+        ">
+        ⚡ Enterprise AI Knowledge Assistant
+        </h1>
+        """, unsafe_allow_html=True)
 
-    st.markdown("<p style='color:#6c757d; font-size:1.1rem; margin-bottom:2rem;'>Securely query organizational metrics, sales records, and compliance requirements.</p>", unsafe_allow_html=True)
+        st.markdown("<p style='color:#6c757d; font-size:1.1rem; margin-bottom:2rem;'>Securely query organizational metrics, sales records, and compliance requirements.</p>", unsafe_allow_html=True)
 # ----------------- DASHBOARD METRICS -----------------
 col1, col2, col3 = st.columns(3)
 m_col1 = col1.empty()
@@ -261,7 +338,12 @@ if prompt:
     with st.chat_message("assistant"):
         with st.spinner("Analyzing parameters..."):
             try:
-                payload = {"query": prompt}
+                payload = {
+                    "query": prompt,
+                    "provider": st.session_state.applied_provider,
+                    "api_key": st.session_state.applied_api_key or None,
+                    "model": st.session_state.applied_nvidia_model if st.session_state.applied_provider == "nvidia" else None,
+                }
                 response = requests.post(f"{BACKEND_URL}/query", json=payload, headers=HEADERS)
                 
                 if response.status_code == 200:
@@ -298,11 +380,15 @@ if prompt:
                         st.rerun()
 
                 else:
-                    error_msg = f"API Encountered an Issue: {response.status_code}"
+                    try:
+                        detail = response.json().get("detail", response.text)
+                    except ValueError:
+                        detail = response.text
+                    error_msg = f"API error ({response.status_code}): {detail or 'No details returned.'}"
                     st.error(error_msg)
                     st.session_state.messages.append({"role": "assistant", "content": error_msg})
                     
             except Exception as e:
-                error_msg = "Backend Offline. Please confirm the FastAPI server is running."
+                error_msg = f"Request failed: {e}"
                 st.error(error_msg)
                 st.session_state.messages.append({"role": "assistant", "content": error_msg})
