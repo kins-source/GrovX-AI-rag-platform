@@ -32,17 +32,28 @@ def get_llm(provider=None, api_key=None, model=None):
     provider = (provider or os.getenv("LLM_PROVIDER", "ollama")).lower()
     temperature = float(os.getenv("LLM_TEMPERATURE", "0"))
 
-    def require_key(value, environment_name):
-        key = value or os.getenv(environment_name)
+    def require_key(value, *environment_names):
+        key = (value or "").strip()
         if not key:
-            raise ValueError(f"Missing API key for {provider}. Add it in Settings or set {environment_name}.")
+            key = next(
+                (
+                    candidate.strip()
+                    for name in environment_names
+                    if (candidate := os.getenv(name, "").strip())
+                    and not candidate.startswith("process.env.")
+                ),
+                "",
+            )
+        if not key:
+            names = " or ".join(environment_names)
+            raise ValueError(f"Missing API key for {provider}. Add it in Settings or set {names}.")
         return key
 
     if provider == "openai":
         from langchain_openai import ChatOpenAI
 
         return ChatOpenAI(
-            model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
+            model=model or os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
             api_key=require_key(api_key, "OPENAI_API_KEY"),
             temperature=temperature,
         )
@@ -65,7 +76,7 @@ def get_llm(provider=None, api_key=None, model=None):
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         return ChatGoogleGenerativeAI(
-            model=os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
+            model=model or os.getenv("GEMINI_MODEL", "gemini-2.0-flash"),
             google_api_key=require_key(api_key, "GEMINI_API_KEY"),
             temperature=temperature,
         )
@@ -74,7 +85,7 @@ def get_llm(provider=None, api_key=None, model=None):
         from langchain_xai import ChatXAI
 
         return ChatXAI(
-            model=os.getenv("GROK_MODEL", "grok-3-mini"),
+            model=model or os.getenv("GROK_MODEL", "grok-3-mini"),
             xai_api_key=require_key(api_key, "XAI_API_KEY"),
             temperature=temperature,
         )
@@ -82,9 +93,12 @@ def get_llm(provider=None, api_key=None, model=None):
     if provider == "nvidia":
         from langchain_openai import ChatOpenAI
 
-        nvidia_key = api_key or os.getenv("NVIDIA_NIM_API_KEY") or os.getenv("NVIDIA_API_KEY")
-        if not nvidia_key:
-            raise ValueError("Missing API key for nvidia. Add it in Settings or set NVIDIA_NIM_API_KEY.")
+        nvidia_key = require_key(
+            api_key,
+            "NVIDIA_NIM_API_KEY",
+            "NVIDIA_NIMS_API_KEY",
+            "NVIDIA_API_KEY",
+        )
         nvidia_model = model or os.getenv("NVIDIA_MODEL", DEFAULT_NVIDIA_MODEL)
         if nvidia_model in RETIRED_NVIDIA_MODELS:
             nvidia_model = DEFAULT_NVIDIA_MODEL

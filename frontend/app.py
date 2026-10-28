@@ -7,6 +7,33 @@ from agents.llm_provider import get_nvidia_models
 
 load_dotenv()
 
+PROVIDER_API_KEY_ENVS = {
+    "openai": ("OPENAI_API_KEY",),
+    "openrouter": ("OPENROUTER_API_KEY",),
+    "gemini": ("GEMINI_API_KEY",),
+    "grok": ("XAI_API_KEY",),
+    "nvidia": ("NVIDIA_NIM_API_KEY", "NVIDIA_NIMS_API_KEY", "NVIDIA_API_KEY"),
+}
+
+
+def provider_env_api_key(provider):
+    for variable in PROVIDER_API_KEY_ENVS.get(provider, ()):
+        value = os.getenv(variable, "").strip()
+        if value and not value.startswith("process.env."):
+            return value
+    return ""
+
+
+def default_provider():
+    provider = os.getenv("LLM_PROVIDER", "ollama").lower()
+    if provider != "ollama":
+        return provider
+    for candidate in ("gemini", "nvidia", "openai", "openrouter", "grok"):
+        if provider_env_api_key(candidate):
+            return candidate
+    return provider
+
+
 API_KEY = os.getenv("API_KEY", "default-dev-key")
 BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000").rstrip("/")
 HEADERS = {"X-API-KEY": API_KEY}
@@ -33,13 +60,11 @@ if "query_count" not in st.session_state:
 if "avg_latency" not in st.session_state:
     st.session_state.avg_latency = 0.0
 if "llm_provider" not in st.session_state:
-    st.session_state.llm_provider = os.getenv("LLM_PROVIDER", "ollama")
-if "llm_api_key" not in st.session_state:
-    st.session_state.llm_api_key = ""
+    st.session_state.llm_provider = default_provider()
 if "applied_provider" not in st.session_state:
     st.session_state.applied_provider = st.session_state.llm_provider
 if "applied_api_key" not in st.session_state:
-    st.session_state.applied_api_key = ""
+    st.session_state.applied_api_key = provider_env_api_key(st.session_state.applied_provider)
 if "editing_api_key" not in st.session_state:
     st.session_state.editing_api_key = False
 if "nvidia_model" not in st.session_state:
@@ -218,9 +243,13 @@ with sidebar_container:
                             st.caption(f"{upload_data.get('pages', 0)} sections, {upload_data.get('characters', 0)} characters")
                             st.text(upload_data.get("preview", "No text was extracted."))
                     else:
-                        st.error("Upload failed.")
+                        try:
+                            detail = response.json().get("detail", response.text)
+                        except ValueError:
+                            detail = response.text
+                        st.error(f"Upload failed: {detail or 'No details returned.'}")
                 except Exception as e:
-                    st.error("Backend Error")
+                    st.error(f"Backend error: {e}")
     
     if st.session_state.uploaded_files:
         st.markdown("<p style='font-size: 0.9em; margin-top:1em; margin-bottom:0;'>Indexed Files:</p>", unsafe_allow_html=True)
@@ -296,8 +325,9 @@ with sidebar_container:
                 get_nvidia_models(),
                 key="nvidia_model",
             )
+        configured_key = provider_env_api_key(provider)
         if st.session_state.applied_provider == provider and st.session_state.applied_api_key and not st.session_state.editing_api_key:
-            st.caption(f"{provider_names[provider]} API key saved for this session.")
+            st.caption(f"{provider_names[provider]} API key is active.")
             if st.button("Change API key", key="change_api_key"):
                 st.session_state.editing_api_key = True
                 st.rerun()
@@ -305,15 +335,19 @@ with sidebar_container:
             st.text_input(
                 f"{provider_names[provider]} API key",
                 type="password",
-                key="llm_api_key",
-                placeholder="Paste your key for this session",
+                key=f"llm_api_key_{provider}",
+                placeholder="Optional: paste a key to override .env",
             )
+            if configured_key:
+                st.caption("Using the API key configured in .env unless you enter an override.")
     if st.button("Apply API Key", use_container_width=True, key="apply_api_key"):
-        if provider != "ollama" and not st.session_state.llm_api_key.strip():
+        typed_key = st.session_state.get(f"llm_api_key_{provider}", "").strip()
+        resolved_key = typed_key or provider_env_api_key(provider)
+        if provider != "ollama" and not resolved_key:
             st.error("Enter an API key before applying this provider.")
         else:
             st.session_state.applied_provider = provider
-            st.session_state.applied_api_key = st.session_state.llm_api_key.strip()
+            st.session_state.applied_api_key = resolved_key
             st.session_state.editing_api_key = False
             if provider == "nvidia":
                 st.session_state.applied_nvidia_model = st.session_state.nvidia_model

@@ -1,4 +1,6 @@
+import json
 import os
+import re
 from functools import lru_cache
 from langgraph.prebuilt import create_react_agent
 from langchain_core.messages import AIMessage, ToolMessage
@@ -7,6 +9,7 @@ from agents.sql_agent import query_sales_database
 from agents.retriever_agent import retrieve_enterprise_documents
 from agents.guardrails import is_safe_query, validate_grounding
 from rag.cache import query_cache
+from rag.vector_store import get_latest_source
 from utils.logger import logger
 from utils.telemetry import track_latency
 from dotenv import load_dotenv
@@ -15,6 +18,57 @@ load_dotenv()
 
 # Define the tools available to the orchestrator
 tools = [query_sales_database, retrieve_enterprise_documents]
+
+SQL_QUERY_TERMS = ("revenue", "sales", "orders", "customer count", "transactions")
+DOCUMENT_QUERY_TERMS = (
+    "document",
+    "file",
+    "pdf",
+    "uploaded",
+    "policy",
+    "compliance",
+    "summarize",
+    "summary",
+)
+
+
+def _is_document_query(user_query: str) -> bool:
+    query_lower = user_query.lower()
+    if any(term in query_lower for term in SQL_QUERY_TERMS):
+        return any(term in query_lower for term in DOCUMENT_QUERY_TERMS)
+    return bool(get_latest_source()) or any(term in query_lower for term in DOCUMENT_QUERY_TERMS)
+
+
+def _document_agent_response(user_query, provider, api_key, model):
+    """Retrieve document context explicitly so the LLM never has to decide whether to call the RAG tool."""
+    retrieval = retrieve_enterprise_documents.invoke(user_query)
+    try:
+        retrieved = json.loads(retrieval)
+        context = retrieved.get("context", "")
+        sources = retrieved.get("sources", [])
+    except (TypeError, ValueError):
+        context = retrieval
+        sources = []
+
+    llm = get_llm(provider, api_key, model)
+    response = llm.invoke([
+        {
+            "role": "system",
+            "content": (
+                "You are an Enterprise AI Knowledge Assistant. Answer the user's question using only "
+                "the retrieved document context below. If it does not contain the answer, say so plainly. "
+                "Do not invent details or mention internal tools.\n\n"
+                f"Retrieved document context:\n{context or 'No relevant documents found.'}"
+            ),
+        },
+        {"role": "user", "content": user_query},
+    ])
+    return {
+        "messages": [
+            ToolMessage(content=json.dumps({"context": context, "sources": sources}), tool_call_id="document-retrieval"),
+            AIMessage(content=response.content),
+        ]
+    }
 
 
 def _nvidia_agent_response(user_query, api_key, model):
@@ -30,9 +84,6 @@ def _nvidia_agent_response(user_query, api_key, model):
         else:
             sql_query = "SELECT SUM(total_price) FROM orders;"
         tool_result = query_sales_database.invoke(sql_query)
-    elif any(keyword in query_lower for keyword in ("document", "pdf", "policy", "compliance", "uploaded")):
-        tool_result = retrieve_enterprise_documents.invoke(user_query)
-
     system_prompt = (
         "You are an Enterprise AI Knowledge Assistant. Answer the user's question directly and concisely. "
         "Use the supplied database or document context when present. Do not mention internal tools or implementation details."
@@ -67,8 +118,12 @@ def process_query(user_query: str, provider=None, api_key=None, model=None) -> d
     if not safe:
         return {"answer": reason, "sources": []}
     
+    active_provider = (provider or os.getenv("LLM_PROVIDER", "ollama")).lower()
+    active_model = model or os.getenv(f"{active_provider.upper()}_MODEL", "")
+    cache_context = f"{active_provider}:{active_model}:{get_latest_source() or ''}"
+
     # 2. Cache Lookup
-    cached_response = query_cache.get(user_query)
+    cached_response = query_cache.get(user_query, cache_context)
     if cached_response:
         return {"answer": cached_response, "sources": ["Cache"]}
     
@@ -92,7 +147,9 @@ def process_query(user_query: str, provider=None, api_key=None, model=None) -> d
         ]
         
         # Invoke the LangGraph agent
-        if (provider or os.getenv("LLM_PROVIDER", "ollama")).lower() == "nvidia":
+        if _is_document_query(user_query):
+            response_state = _document_agent_response(user_query, provider, api_key, model)
+        elif active_provider == "nvidia":
             response_state = _nvidia_agent_response(user_query, api_key, model)
         else:
             response_state = get_agent(provider, api_key, model).invoke({"messages": messages})
@@ -101,7 +158,6 @@ def process_query(user_query: str, provider=None, api_key=None, model=None) -> d
         final_answer = str(response_state["messages"][-1].content)
         
         # Clean leaked tool JSON traces (e.g. [{"name": "tool_name", ...}]) from local model outputs
-        import re
         final_answer = re.sub(r'\[\s*\{.*?"name"\s*:.*?"arguments"\s*:.*?\}\s*\]', '', final_answer, flags=re.DOTALL).strip()
         
         # If the trace was the ONLY output (empty final synthesis), fallback to the actual executed tool result
@@ -119,18 +175,16 @@ def process_query(user_query: str, provider=None, api_key=None, model=None) -> d
             final_answer += "\n\n(Disclaimer: This response could not be fully verified against context.)"
         
         # Cache the successful response
-        query_cache.set(user_query, final_answer)
+        query_cache.set(user_query, final_answer, cache_context)
         
         # Extract sources from tool messages if any
         sources = []
-        import json
-        import re
         for msg in response_state["messages"]:
             if getattr(msg, "type", "") == "tool":
                 try:
                     # Attempt to parse JSON structure containing sources list
                     parsed_content = json.loads(str(msg.content))
-                    if "sources" in parsed_content:
+                    if isinstance(parsed_content, dict) and "sources" in parsed_content:
                         sources.extend(parsed_content["sources"])
                 except Exception:
                     # Fallback regex parsing
@@ -145,7 +199,7 @@ def process_query(user_query: str, provider=None, api_key=None, model=None) -> d
         
     except Exception as e:
         logger.error(f"Error during agent execution: {e}")
-        if (provider or os.getenv("LLM_PROVIDER", "ollama")).lower() == "nvidia" and "Function" in str(e):
+        if active_provider == "nvidia" and "Function" in str(e):
             return {
                 "answer": "NVIDIA NIM rejected the API key saved in Settings. Click Change API key, enter a valid key, and apply it again.",
                 "sources": [],

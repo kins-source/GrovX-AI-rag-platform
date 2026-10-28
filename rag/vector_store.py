@@ -43,6 +43,9 @@ def add_documents_to_store(chunks):
     """
     if not chunks:
         return
+
+    from rag.cache import query_cache
+    query_cache.clear()
         
     # Extract source metadata (added in document_loader) and persist state
     source = chunks[0].metadata.get("source")

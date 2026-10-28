@@ -102,8 +102,11 @@ pip install -r requirements.txt
 
 Copy `.env.example` to `.env`, then set `LLM_PROVIDER` and the matching API
 key. Supported providers are `ollama`, `openai`, `openrouter`, `gemini`,
-`grok`, and `nvidia`. Only the selected provider needs a key; keep `.env`
-private.
+`grok`, and `nvidia`. API keys configured in `.env` are used automatically;
+the Settings panel accepts an optional session-only key override. If
+`LLM_PROVIDER` is `ollama` and a cloud provider key is configured, the UI
+defaults to Gemini first, then NVIDIA, OpenAI, OpenRouter, and Grok. Keep
+`.env` private.
 
 The NVIDIA provider uses the OpenAI-compatible NVIDIA NIM endpoint. Set
 `NVIDIA_BASE_URL` and `NVIDIA_MODEL` when using a self-hosted or different NIM
@@ -169,6 +172,5 @@ Sensitive data such as API keys are stored in `.env` and excluded using `.gitign
 * Advanced analytics dashboard
 
 ---
-
 
 

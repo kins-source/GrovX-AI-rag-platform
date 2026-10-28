@@ -25,8 +25,7 @@ def load_document(file_content: bytes, filename: str):
             loader = PyPDFLoader(temp_path)
             docs = loader.load()
         elif ext in {".txt", ".md", ".markdown"}:
-            from langchain_community.document_loaders import UnstructuredFileLoader
-            loader = UnstructuredFileLoader(temp_path)
+            loader = TextLoader(temp_path, encoding="utf-8", autodetect_encoding=True)
             docs = loader.load()
         elif ext == ".csv":
             from langchain_community.document_loaders import CSVLoader
