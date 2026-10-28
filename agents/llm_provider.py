@@ -47,6 +47,20 @@ def get_llm(provider=None, api_key=None, model=None):
             temperature=temperature,
         )
 
+    if provider == "openrouter":
+        from langchain_openai import ChatOpenAI
+
+        return ChatOpenAI(
+            model=model or os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
+            api_key=require_key(api_key, "OPENROUTER_API_KEY"),
+            base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
+            default_headers={
+                "HTTP-Referer": os.getenv("OPENROUTER_HTTP_REFERER", "http://localhost:8501"),
+                "X-Title": os.getenv("OPENROUTER_APP_NAME", "Enterprise AI Knowledge Assistant"),
+            },
+            temperature=temperature,
+        )
+
     if provider == "gemini":
         from langchain_google_genai import ChatGoogleGenerativeAI
 
@@ -82,7 +96,7 @@ def get_llm(provider=None, api_key=None, model=None):
         )
 
     if provider != "ollama":
-        raise ValueError("LLM_PROVIDER must be ollama, openai, gemini, grok, or nvidia")
+        raise ValueError("LLM_PROVIDER must be ollama, openai, openrouter, gemini, grok, or nvidia")
 
     return ChatOllama(
         model=os.getenv("OLLAMA_MODEL", "llama3.1"),

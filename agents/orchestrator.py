@@ -147,7 +147,7 @@ def process_query(user_query: str, provider=None, api_key=None, model=None) -> d
         logger.error(f"Error during agent execution: {e}")
         if (provider or os.getenv("LLM_PROVIDER", "ollama")).lower() == "nvidia" and "Function" in str(e):
             return {
-                "answer": "NVIDIA NIM rejected this request. Rotate NVIDIA_NIM_API_KEY in .env and restart the backend.",
+                "answer": "NVIDIA NIM rejected the API key saved in Settings. Click Change API key, enter a valid key, and apply it again.",
                 "sources": [],
             }
         return {"answer": f"Internal system error occurred: {str(e)}", "sources": []}

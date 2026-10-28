@@ -40,6 +40,8 @@ if "applied_provider" not in st.session_state:
     st.session_state.applied_provider = st.session_state.llm_provider
 if "applied_api_key" not in st.session_state:
     st.session_state.applied_api_key = ""
+if "editing_api_key" not in st.session_state:
+    st.session_state.editing_api_key = False
 if "nvidia_model" not in st.session_state:
     st.session_state.nvidia_model = os.getenv("NVIDIA_MODEL", get_nvidia_models()[0])
 if "applied_nvidia_model" not in st.session_state:
@@ -66,7 +68,11 @@ st.markdown("""
     [data-testid="stMetric"] { background: rgba(255,255,255,0.78); border: 1px solid #cbdced; border-radius: 16px; padding: 1rem; box-shadow: 0 10px 28px rgba(15, 35, 61, 0.08); }
     .stButton > button { border-radius: 12px; border: 1px solid #b5c8dc; background: #ffffff; color: #0f2742; font-weight: 650; transition: all 0.2s ease; }
     .stButton > button:hover { border-color: #2563a8; background: #e8f2ff; color: #0b3c70; transform: translateY(-1px); }
-    [data-testid="stChatInput"] { border: 1px solid #a9bfd6; border-radius: 16px; background: rgba(255,255,255,0.92); box-shadow: 0 12px 30px rgba(15, 35, 61, 0.1); }
+    [data-testid="stChatInput"] { border: 1px solid #a9bfd6; border-radius: 16px; background: rgba(255,255,255,0.92); box-shadow: 0 12px 30px rgba(15, 35, 61, 0.1); box-sizing: border-box; }
+    [data-testid="stChatInput"] > div { width: 100% !important; box-sizing: border-box; }
+    [data-testid="stChatInput"] textarea { padding-right: 3.5rem !important; }
+    [data-testid="stChatInput"] button { display: flex !important; align-items: center; justify-content: center; width: 2.75rem !important; min-width: 2.75rem !important; height: 2.75rem !important; flex-shrink: 0 !important; visibility: visible !important; opacity: 1 !important; z-index: 2; color: #0f2742 !important; background: #e8f2ff !important; }
+    [data-testid="stChatInput"] button svg { width: 1.25rem !important; height: 1.25rem !important; }
 
     /* Modern Chat Bubble Settings */
     /* AI Message Bubble */
@@ -112,6 +118,16 @@ st.markdown("""
         color: #ffffff !important;
     }
 
+    div[data-testid="stVerticalBlock"]:has(> div.element-container div#my-custom-sidebar) [data-testid="stFileUploader"] * {
+        color: #111827 !important;
+    }
+    div[data-testid="stVerticalBlock"]:has(> div.element-container div#my-custom-sidebar) [data-testid="stFileUploader"] button,
+    div[data-testid="stVerticalBlock"]:has(> div.element-container div#my-custom-sidebar) [data-testid="stFileUploader"] button * {
+        color: #ffffff !important;
+        fill: #ffffff !important;
+        stroke: #ffffff !important;
+    }
+
     /* Custom button styling within dark sidebar */
     div[data-testid="stVerticalBlock"]:has(> div.element-container div#my-custom-sidebar) button {
         background-color: #1e293b !important;
@@ -142,6 +158,13 @@ if st.session_state.sidebar_open:
                 padding-left: 320px !important;
                 transition: padding-left 0.3s ease-in-out;
             }
+            [data-testid="stChatInput"] {
+                left: 320px !important;
+                right: auto !important;
+                width: calc(100% - 340px) !important;
+                transform: none !important;
+                transition: left 0.3s ease-in-out, right 0.3s ease-in-out;
+            }
         </style>
     """, unsafe_allow_html=True)
 else:
@@ -153,6 +176,13 @@ else:
             .block-container {
                 padding-left: 3rem !important;
                 transition: padding-left 0.3s ease-in-out;
+            }
+            [data-testid="stChatInput"] {
+                left: 3rem !important;
+                right: auto !important;
+                width: calc(100% - 6rem) !important;
+                transform: none !important;
+                transition: left 0.3s ease-in-out, right 0.3s ease-in-out;
             }
         </style>
     """, unsafe_allow_html=True)
@@ -205,11 +235,37 @@ with sidebar_container:
     
     # 2. History Section
     st.markdown("<h4>🕘 Query History</h4>", unsafe_allow_html=True)
-    if st.session_state.query_count > 0:
-        user_msgs = [m["content"] for m in st.session_state.messages if m["role"] == "user"]
-        for m in reversed(user_msgs[-5:]):
-            preview = m[:25] + '...' if len(m) > 25 else m
-            st.caption(f"• {preview}")
+    user_message_indices = [
+        index for index, message in enumerate(st.session_state.messages)
+        if message["role"] == "user"
+    ]
+    if user_message_indices:
+        for message_index in reversed(user_message_indices[-5:]):
+            message = st.session_state.messages[message_index]
+            original_query = message["content"]
+            history_title = message.get("history_title", original_query)
+            history_cols = st.columns([0.58, 0.21, 0.21], gap="small")
+            with history_cols[0]:
+                renamed_title = st.text_input(
+                    "History item",
+                    value=history_title,
+                    key=f"history_title_{message_index}",
+                    label_visibility="collapsed",
+                )
+            with history_cols[1]:
+                if st.button("Rename", key=f"rename_history_{message_index}", help="Rename history item", use_container_width=True):
+                    message["history_title"] = renamed_title.strip() or original_query
+                    st.rerun()
+            with history_cols[2]:
+                if st.button("Delete", key=f"delete_history_{message_index}", help="Delete history item", use_container_width=True):
+                    del st.session_state.messages[message_index]
+                    if message_index < len(st.session_state.messages) and st.session_state.messages[message_index]["role"] == "assistant":
+                        del st.session_state.messages[message_index]
+                    st.session_state.query_count = sum(
+                        1 for item in st.session_state.messages
+                        if item["role"] == "assistant" and "latency" in item
+                    )
+                    st.rerun()
     else:
         st.caption("No queries run yet.")
 
@@ -220,6 +276,7 @@ with sidebar_container:
     provider_names = {
         "ollama": "Ollama",
         "openai": "ChatGPT / OpenAI",
+        "openrouter": "OpenRouter",
         "gemini": "Google Gemini",
         "grok": "xAI Grok",
         "nvidia": "NVIDIA NIM",
@@ -239,18 +296,25 @@ with sidebar_container:
                 get_nvidia_models(),
                 key="nvidia_model",
             )
-        st.text_input(
-            f"{provider_names[provider]} API key",
-            type="password",
-            key="llm_api_key",
-            placeholder="Paste your key for this session",
-        )
+        if st.session_state.applied_provider == provider and st.session_state.applied_api_key and not st.session_state.editing_api_key:
+            st.caption(f"{provider_names[provider]} API key saved for this session.")
+            if st.button("Change API key", key="change_api_key"):
+                st.session_state.editing_api_key = True
+                st.rerun()
+        else:
+            st.text_input(
+                f"{provider_names[provider]} API key",
+                type="password",
+                key="llm_api_key",
+                placeholder="Paste your key for this session",
+            )
     if st.button("Apply API Key", use_container_width=True, key="apply_api_key"):
         if provider != "ollama" and not st.session_state.llm_api_key.strip():
             st.error("Enter an API key before applying this provider.")
         else:
             st.session_state.applied_provider = provider
             st.session_state.applied_api_key = st.session_state.llm_api_key.strip()
+            st.session_state.editing_api_key = False
             if provider == "nvidia":
                 st.session_state.applied_nvidia_model = st.session_state.nvidia_model
             st.success(f"{provider_names[provider]} is ready for queries.")
